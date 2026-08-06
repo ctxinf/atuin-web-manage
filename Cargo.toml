@@ -1,10 +1,11 @@
 [package]
 name = "atuin-web-manage"
-version = "1.0.1"
+version = "1.0.2"
 edition = "2021"
 description = "Local web UI to manage (search, edit, bulk-delete) atuin shell history"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/ctxinf/atuin-web-manage"
+homepage = "https://github.com/ctxinf/atuin-web-manage"
 readme = "README.md"
 
 [workspace]
@@ -37,3 +38,8 @@ tracing-subscriber = "0.3"
 lto = true
 strip = true
 codegen-units = 1
+
+# The profile cargo-dist builds with in CI.
+[profile.dist]
+inherits = "release"
+lto = "thin"
