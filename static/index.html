@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>atuin-web-manage</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body { font: 14px/1.4 system-ui, sans-serif; margin: 0; padding: 0 0 72px; }
+  .container { max-width: 1100px; margin: 0 auto; padding: 0 16px; }
+  .header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; padding-top: 12px; }
+  .header h1 { font-size: 16px; margin: 0; }
+  .header #stats { font-size: 12px; color: #888; }
+  .bar {
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    position: sticky; top: 0; z-index: 3;
+    background: Canvas;
+    padding: 8px 0; margin-bottom: 4px;
+    border-bottom: 1px solid #8884;
+  }
+  .bar input[type=search] { flex: 1; min-width: 240px; padding: 6px 8px; }
+  button { padding: 6px 10px; cursor: pointer; }
+  button.danger { background: #c33; color: #fff; border: 1px solid #a22; }
+  button.danger:disabled { background: #ccc; color: #666; border-color: #bbb; cursor: not-allowed; }
+  .meta { color: #888; font-size: 12px; }
+  table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+  th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid #8884; vertical-align: top; }
+  th { position: sticky; top: 49px; background: Canvas; z-index: 2; }
+  tbody tr:has(.cb:checked) { background: color-mix(in srgb, #c33 18%, transparent); }
+  td.cmd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-all; }
+  td.cmd input { width: 100%; font: inherit; padding: 2px 4px; }
+  .scroll-nav {
+    position: fixed; right: 16px; bottom: 16px;
+    display: flex; flex-direction: column; gap: 6px; z-index: 10;
+  }
+  .scroll-nav button {
+    width: 40px; height: 40px; border-radius: 50%;
+    border: 1px solid #8886; background: Canvas; color: CanvasText;
+    font-size: 16px; line-height: 1; padding: 0;
+    box-shadow: 0 2px 6px #0003;
+  }
+  .scroll-nav button:hover { background: color-mix(in srgb, CanvasText 10%, Canvas); }
+  .col-cb  { width: 32px; }
+  .col-ts  { width: 150px; white-space: nowrap; }
+  .col-ex  { width: 36px; text-align: right; }
+  .col-act { width: 96px; text-align: right; white-space: nowrap; }
+  .pager { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
+  .pager .spacer { flex: 1; }
+  .row-edit { color: #06c; cursor: pointer; background: none; border: none; padding: 0 4px; }
+  .row-edit.save { color: #0a0; font-weight: bold; }
+  .row-edit.cancel { color: #a00; }
+  .toast { position: fixed; right: 12px; bottom: 12px; padding: 8px 12px; background: #222; color: #fff; border-radius: 4px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+  .toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<div class="container">
+<div class="header">
+  <h1>atuin-web-manage</h1>
+  <span id="stats" class="meta"></span>
+</div>
+<div class="bar">
+  <input id="q" type="search" placeholder="search command…" autofocus>
+  <label class="meta" title="only show commands containing a newline">
+    <input type="checkbox" id="multiline"> multi-line only
+  </label>
+  <span class="meta" id="meta">–</span>
+  <button id="reload">Reload</button>
+  <button id="delSel" class="danger" disabled>Delete selected</button>
+</div>
+
+<table>
+  <thead>
+    <tr>
+      <th class="col-cb"><input type="checkbox" id="cbAll"></th>
+      <th class="col-ts">time</th>
+      <th class="col-ex">exit</th>
+      <th>command</th>
+      <th class="col-act">actions</th>
+    </tr>
+  </thead>
+  <tbody id="tbody"></tbody>
+</table>
+
+<div class="pager">
+  <button id="prev">◀ prev</button>
+  <span id="pageInfo" class="meta"></span>
+  <button id="next">next ▶</button>
+  <label class="meta">per page
+    <select id="limit">
+      <option>25</option><option selected>50</option><option>100</option><option>200</option>
+    </select>
+  </label>
+</div>
+</div>
+
+<div class="scroll-nav">
+  <button id="goTop" title="scroll to top">▲</button>
+  <button id="goBottom" title="scroll to bottom">▼</button>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const state = { q: "", limit: 50, offset: 0, total: 0, rows: [], multiline: false };
+
+function fmtTs(ns) {
+  const d = new Date(Math.floor(ns / 1e6));
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+function esc(s) { return s.replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+
+function toast(msg) {
+  const t = $("#toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => t.classList.remove("show"), 1600);
+}
+
+async function load() {
+  const url = new URL("/api/history", location.origin);
+  url.searchParams.set("q", state.q);
+  url.searchParams.set("limit", state.limit);
+  url.searchParams.set("offset", state.offset);
+  if (state.multiline) url.searchParams.set("multiline", "true");
+  const r = await fetch(url);
+  if (!r.ok) { toast("load failed: " + r.status); return; }
+  const data = await r.json();
+  state.total = data.total;
+  state.rows = data.rows;
+  render();
+  loadStats();
+}
+
+async function loadStats() {
+  const r = await fetch("/api/stats");
+  if (!r.ok) return;
+  const s = await r.json();
+  const range = (s.oldest_ts && s.newest_ts)
+    ? ` · ${fmtTs(s.oldest_ts).slice(0,10)} → ${fmtTs(s.newest_ts).slice(0,10)}`
+    : "";
+  const dup = s.total - s.distinct_commands;
+  $("#stats").textContent =
+    `${s.total.toLocaleString()} rows · ${s.distinct_commands.toLocaleString()} unique (${dup.toLocaleString()} dup)${range}`;
+}
+
+function render() {
+  const tbody = $("#tbody");
+  tbody.innerHTML = state.rows.map((row) => `
+    <tr data-id="${esc(row.id)}">
+      <td class="col-cb"><input type="checkbox" class="cb"></td>
+      <td class="col-ts meta">${fmtTs(row.timestamp)}</td>
+      <td class="col-ex">${row.exit}</td>
+      <td class="cmd"><span class="cmd-view">${esc(row.command)}</span></td>
+      <td class="col-act">
+        <button class="row-edit edit" title="edit">edit</button>
+      </td>
+    </tr>
+  `).join("");
+
+  $("#cbAll").checked = false;
+  updateDelBtn();
+
+  const start = state.total === 0 ? 0 : state.offset + 1;
+  const end = Math.min(state.offset + state.limit, state.total);
+  $("#pageInfo").textContent = `${start}–${end} of ${state.total}`;
+  $("#meta").textContent = state.q ? `filter: "${state.q}"` : `all rows`;
+  $("#prev").disabled = state.offset <= 0;
+  $("#next").disabled = end >= state.total;
+}
+
+function updateDelBtn() {
+  const n = document.querySelectorAll("#tbody .cb:checked").length;
+  const b = $("#delSel");
+  b.disabled = n === 0;
+  b.textContent = n ? `Delete selected (${n})` : "Delete selected";
+}
+
+$("#tbody").addEventListener("change", (e) => {
+  if (e.target.classList.contains("cb")) updateDelBtn();
+});
+$("#cbAll").addEventListener("change", (e) => {
+  document.querySelectorAll("#tbody .cb").forEach((cb) => cb.checked = e.target.checked);
+  updateDelBtn();
+});
+
+$("#tbody").addEventListener("click", (e) => {
+  const btn = e.target.closest("button.row-edit");
+  if (!btn) return;
+  const tr = btn.closest("tr");
+  const id = tr.dataset.id;
+  const td = tr.querySelector("td.cmd");
+  if (btn.classList.contains("edit")) {
+    const cur = td.querySelector(".cmd-view").textContent;
+    td.innerHTML = `<input type="text" class="cmd-edit" value="${esc(cur)}">`;
+    tr.querySelector(".col-act").innerHTML =
+      `<button class="row-edit save">save</button><button class="row-edit cancel">cancel</button>`;
+    td.querySelector("input").focus();
+  } else if (btn.classList.contains("cancel")) {
+    load();
+  } else if (btn.classList.contains("save")) {
+    const val = td.querySelector("input").value;
+    saveEdit(id, val);
+  }
+});
+
+async function saveEdit(id, command) {
+  const r = await fetch("/api/edit/" + encodeURIComponent(id), {
+    method: "PATCH",
+    headers: {"content-type": "application/json"},
+    body: JSON.stringify({command}),
+  });
+  if (!r.ok) { toast("edit failed: " + r.status); return; }
+  const j = await r.json();
+  toast(`edited (${j.affected})`);
+  load();
+}
+
+$("#delSel").addEventListener("click", async () => {
+  const ids = [...document.querySelectorAll("#tbody .cb:checked")]
+    .map((cb) => cb.closest("tr").dataset.id);
+  if (ids.length === 0) return;
+  if (!confirm(`Delete ${ids.length} record(s)? This cannot be undone.`)) return;
+  const r = await fetch("/api/delete", {
+    method: "POST",
+    headers: {"content-type": "application/json"},
+    body: JSON.stringify({ids}),
+  });
+  if (!r.ok) { toast("delete failed: " + r.status); return; }
+  const j = await r.json();
+  toast(`deleted ${j.affected}`);
+  if (state.offset >= state.total - j.affected) {
+    state.offset = Math.max(0, state.offset - state.limit);
+  }
+  load();
+});
+
+let qTimer;
+$("#q").addEventListener("input", (e) => {
+  clearTimeout(qTimer);
+  qTimer = setTimeout(() => {
+    state.q = e.target.value;
+    state.offset = 0;
+    load();
+  }, 200);
+});
+$("#multiline").addEventListener("change", (e) => { state.multiline = e.target.checked; state.offset = 0; load(); });
+$("#reload").addEventListener("click", load);
+$("#prev").addEventListener("click", () => { state.offset = Math.max(0, state.offset - state.limit); load(); });
+$("#next").addEventListener("click", () => { state.offset += state.limit; load(); });
+$("#limit").addEventListener("change", (e) => { state.limit = +e.target.value; state.offset = 0; load(); });
+
+$("#goTop").addEventListener("click", () => window.scrollTo({top: 0, behavior: "smooth"}));
+$("#goBottom").addEventListener("click", () => window.scrollTo({top: document.documentElement.scrollHeight, behavior: "smooth"}));
+
+load();
+</script>
+</body>
+</html>
