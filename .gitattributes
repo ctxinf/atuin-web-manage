@@ -1,0 +1,6 @@
+# Keep GitHub's language bar honest: this is a Rust project.
+# The bundled UI (HTML/CSS/JS) is an implementation detail, and the release
+# workflow is generated boilerplate — neither should skew language stats.
+
+static/**            linguist-vendored
+.github/workflows/** linguist-generated

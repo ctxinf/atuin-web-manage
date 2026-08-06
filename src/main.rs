@@ -18,8 +18,8 @@ static INDEX_HTML: &str = include_str!("../static/index.html");
 #[derive(Parser, Debug)]
 #[command(about = "Local web UI to manage atuin shell history")]
 struct Args {
-    /// Address to bind, e.g. 127.0.0.1:8787
-    #[arg(long, default_value = "127.0.0.1:8787")]
+    /// Address to bind, e.g. 127.0.0.1:28057
+    #[arg(long, default_value = "127.0.0.1:28057")]
     bind: String,
 
     /// Path to atuin history.db (default: ~/.local/share/atuin/history.db)

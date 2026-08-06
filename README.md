@@ -9,15 +9,8 @@ multi-line blobs that clutter `Ctrl+R`.
 
 ## Features
 
-- Paginated history list, newest first
-- Substring search on the `command` column
-- Filter to "multi-line only" (great for pruning those annoying pasted blobs)
-- Checkbox bulk delete
-- Inline command edit
-- Stats: total rows, unique commands, duplicates, date range
-
-Deleted / edited rows take effect immediately in `Ctrl+R` — atuin re-reads the
-DB on every search.
+Search, filter (incl. multi-line only), inline edit, and checkbox bulk delete
+against your atuin history. Changes take effect in `Ctrl+R` immediately.
 
 > **Warning:** this project assumes that atuin sync is disabled and history is
 > stored in plaintext (the default when you never set up sync). Deletes are
@@ -55,13 +48,13 @@ install -Dm755 target/release/atuin-web-manage ~/.local/bin/atuin-web-manage
 ## Usage
 
 ```
-atuin-web-manage                             # bind to 127.0.0.1:8787
+atuin-web-manage                             # bind to 127.0.0.1:28057
 atuin-web-manage --bind 127.0.0.1:9000       # custom port
 atuin-web-manage --bind 0.0.0.0:8787         # LAN-reachable (see warning below)
 atuin-web-manage --db /path/to/history.db    # non-default DB path
 ```
 
-Then open <http://127.0.0.1:8787>.
+Then open <http://127.0.0.1:28057>.
 
 **Security note:** the server has no auth. Anyone who can reach the bind
 address can read and delete your shell history. Keep it on `127.0.0.1` unless
@@ -83,7 +76,7 @@ After=default.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/atuin-web-manage --bind 127.0.0.1:8787
+ExecStart=%h/.local/bin/atuin-web-manage --bind 127.0.0.1:28057
 Restart=on-failure
 RestartSec=2
 
