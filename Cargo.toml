@@ -1,6 +1,6 @@
 [package]
 name = "atuin-web-manage"
-version = "1.0.2"
+version = "1.0.3"
 edition = "2021"
 description = "Local web UI to manage (search, edit, bulk-delete) atuin shell history"
 license = "MIT OR Apache-2.0"
