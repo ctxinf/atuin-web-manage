@@ -117,6 +117,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/history", get(list_history))
         .route("/api/stats", get(stats))
         .route("/api/delete", post(delete_history))
+        .route("/api/dedupe/preview", get(dedupe_preview))
+        .route("/api/dedupe", post(dedupe))
         .route("/api/edit/:id", patch(edit_history))
         .with_state(state);
 
@@ -265,6 +267,58 @@ async fn stats(
         oldest_ts,
         newest_ts,
     }))
+}
+
+#[derive(Debug, Serialize)]
+struct DedupePreviewResp {
+    duplicates: i64,
+    total: i64,
+    distinct_commands: i64,
+}
+
+// A row is a duplicate iff another row with the same command has a strictly
+// greater timestamp, or the same timestamp and a greater id. Keeps exactly one
+// row per distinct command (the newest).
+const DEDUPE_WHERE: &str = "deleted_at IS NULL AND EXISTS (
+    SELECT 1 FROM history h2
+    WHERE h2.deleted_at IS NULL
+      AND h2.command = history.command
+      AND (h2.timestamp > history.timestamp
+           OR (h2.timestamp = history.timestamp AND h2.id > history.id))
+)";
+
+async fn dedupe_preview(
+    State(state): State<AppState>,
+) -> Result<Json<DedupePreviewResp>, (StatusCode, String)> {
+    let conn = state.conn.lock().unwrap();
+    let total: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM history WHERE deleted_at IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(map_err)?;
+    let distinct_commands: i64 = conn
+        .query_row(
+            "SELECT COUNT(DISTINCT command) FROM history WHERE deleted_at IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(map_err)?;
+    Ok(Json(DedupePreviewResp {
+        duplicates: total - distinct_commands,
+        total,
+        distinct_commands,
+    }))
+}
+
+async fn dedupe(
+    State(state): State<AppState>,
+) -> Result<Json<AffectedResp>, (StatusCode, String)> {
+    let conn = state.conn.lock().unwrap();
+    let sql = format!("DELETE FROM history WHERE {}", DEDUPE_WHERE);
+    let affected = conn.execute(&sql, []).map_err(map_err)?;
+    Ok(Json(AffectedResp { affected }))
 }
 
 async fn edit_history(

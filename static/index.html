@@ -19,7 +19,7 @@
     padding: 8px 0; margin-bottom: 4px;
     border-bottom: 1px solid #8884;
   }
-  .bar input[type=search] { flex: 1; min-width: 240px; padding: 6px 8px; }
+  .bar input[type=search] { flex: 1; min-width: 160px; max-width: 320px; padding: 6px 8px; }
   button { padding: 6px 10px; cursor: pointer; }
   button.danger { background: #c33; color: #fff; border: 1px solid #a22; }
   button.danger:disabled { background: #ccc; color: #666; border-color: #bbb; cursor: not-allowed; }
@@ -29,7 +29,8 @@
   th { position: sticky; top: 49px; background: Canvas; z-index: 2; }
   tbody tr:has(.cb:checked) { background: color-mix(in srgb, #c33 18%, transparent); }
   td.cmd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-all; }
-  td.cmd input { width: 100%; font: inherit; padding: 2px 4px; }
+  td.cmd input, td.cmd textarea { width: 100%; font: inherit; padding: 2px 4px; }
+  td.cmd textarea { resize: vertical; min-height: 1.6em; }
   .scroll-nav {
     position: fixed; right: 16px; bottom: 16px;
     display: flex; flex-direction: column; gap: 6px; z-index: 10;
@@ -44,14 +45,23 @@
   .col-cb  { width: 32px; }
   .col-ts  { width: 150px; white-space: nowrap; }
   .col-ex  { width: 36px; text-align: right; }
-  .col-act { width: 96px; text-align: right; white-space: nowrap; }
+  .col-act { width: 128px; text-align: right; white-space: nowrap; }
   .pager { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
   .pager .spacer { flex: 1; }
   .row-edit { color: #06c; cursor: pointer; background: none; border: none; padding: 0 4px; }
   .row-edit.save { color: #0a0; font-weight: bold; }
   .row-edit.cancel { color: #a00; }
+  .row-edit.del { color: #c33; }
   .toast { position: fixed; right: 12px; bottom: 12px; padding: 8px 12px; background: #222; color: #fff; border-radius: 4px; opacity: 0; transition: opacity .2s; pointer-events: none; }
   .toast.show { opacity: 1; }
+  details.actions { display: contents; }
+  details.actions > summary {
+    list-style: none; cursor: pointer;
+    padding: 6px 10px; border: 1px solid #8886; border-radius: 3px;
+    user-select: none;
+  }
+  details.actions > summary::-webkit-details-marker { display: none; }
+  details.actions[open] > summary { background: color-mix(in srgb, CanvasText 8%, Canvas); }
 </style>
 </head>
 <body>
@@ -68,6 +78,10 @@
   <span class="meta" id="meta">–</span>
   <button id="reload">Reload</button>
   <button id="delSel" class="danger" disabled>Delete selected</button>
+  <details class="actions" id="actionsMenu">
+    <summary title="more actions">⋯</summary>
+    <button id="dedupe" class="danger">Remove duplicates…</button>
+  </details>
 </div>
 
 <table>
@@ -112,6 +126,7 @@ function fmtTs(ns) {
   return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 function esc(s) { return s.replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function autosize(ta) { ta.style.height = "auto"; ta.style.height = ta.scrollHeight + "px"; }
 
 function toast(msg) {
   const t = $("#toast");
@@ -158,6 +173,7 @@ function render() {
       <td class="cmd"><span class="cmd-view">${esc(row.command)}</span></td>
       <td class="col-act">
         <button class="row-edit edit" title="edit">edit</button>
+        <button class="row-edit del" title="delete this row">delete</button>
       </td>
     </tr>
   `).join("");
@@ -196,17 +212,40 @@ $("#tbody").addEventListener("click", (e) => {
   const td = tr.querySelector("td.cmd");
   if (btn.classList.contains("edit")) {
     const cur = td.querySelector(".cmd-view").textContent;
-    td.innerHTML = `<input type="text" class="cmd-edit" value="${esc(cur)}">`;
+    td.innerHTML = `<textarea class="cmd-edit" rows="1"></textarea>`;
+    const ta = td.querySelector("textarea");
+    ta.value = cur;
+    autosize(ta);
+    ta.addEventListener("input", () => autosize(ta));
     tr.querySelector(".col-act").innerHTML =
       `<button class="row-edit save">save</button><button class="row-edit cancel">cancel</button>`;
-    td.querySelector("input").focus();
+    ta.focus();
   } else if (btn.classList.contains("cancel")) {
     load();
   } else if (btn.classList.contains("save")) {
-    const val = td.querySelector("input").value;
+    const val = td.querySelector("textarea").value;
     saveEdit(id, val);
+  } else if (btn.classList.contains("del")) {
+    const preview = (tr.querySelector(".cmd-view")?.textContent || "").slice(0, 120);
+    if (!confirm(`Delete this record?\n\n${preview}`)) return;
+    deleteOne(id);
   }
 });
+
+async function deleteOne(id) {
+  const r = await fetch("/api/delete", {
+    method: "POST",
+    headers: {"content-type": "application/json"},
+    body: JSON.stringify({ids: [id]}),
+  });
+  if (!r.ok) { toast("delete failed: " + r.status); return; }
+  const j = await r.json();
+  toast(`deleted ${j.affected}`);
+  if (state.offset >= state.total - j.affected) {
+    state.offset = Math.max(0, state.offset - state.limit);
+  }
+  load();
+}
 
 async function saveEdit(id, command) {
   const r = await fetch("/api/edit/" + encodeURIComponent(id), {
@@ -253,6 +292,24 @@ $("#reload").addEventListener("click", load);
 $("#prev").addEventListener("click", () => { state.offset = Math.max(0, state.offset - state.limit); load(); });
 $("#next").addEventListener("click", () => { state.offset += state.limit; load(); });
 $("#limit").addEventListener("change", (e) => { state.limit = +e.target.value; state.offset = 0; load(); });
+
+$("#dedupe").addEventListener("click", async () => {
+  const pr = await fetch("/api/dedupe/preview");
+  if (!pr.ok) { toast("preview failed: " + pr.status); return; }
+  const p = await pr.json();
+  if (p.duplicates === 0) { toast("no duplicates"); return; }
+  const msg = `Delete ${p.duplicates.toLocaleString()} duplicate record(s)?\n\n`
+            + `Keeps the newest row per distinct command.\n`
+            + `${p.total.toLocaleString()} rows → ${p.distinct_commands.toLocaleString()} rows.\n\n`
+            + `This cannot be undone.`;
+  if (!confirm(msg)) return;
+  const r = await fetch("/api/dedupe", {method: "POST"});
+  if (!r.ok) { toast("dedupe failed: " + r.status); return; }
+  const j = await r.json();
+  toast(`removed ${j.affected} duplicate(s)`);
+  state.offset = 0;
+  load();
+});
 
 $("#goTop").addEventListener("click", () => window.scrollTo({top: 0, behavior: "smooth"}));
 $("#goBottom").addEventListener("click", () => window.scrollTo({top: document.documentElement.scrollHeight, behavior: "smooth"}));
