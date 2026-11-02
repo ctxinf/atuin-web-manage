@@ -61,6 +61,33 @@ address can read and delete your shell history. Keep it on `127.0.0.1` unless
 you know what you're doing. A warning is printed to stderr if you bind to a
 non-loopback address.
 
+## Search
+
+Use the compact `sort by: time | relevance` controls below the search box:
+
+- **relevance** (default) matches Atuin **18.16.1** default interactive
+  **GLOBAL / fuzzy / smart_sort=false** search: smart case, query operators,
+  regex, user-author filtering, deduplication, and minspan ranking. Like the
+  CLI, it ranks the newest **200 unique matching commands**, then paginates.
+- **time** keeps every matching history record, including duplicates and agent
+  records, ordered newest first for editing and deletion.
+
+`A B C` matches `A yy B yxxx C lyy`. Operators include `'exact`, `^prefix`,
+`suffix$`, `!exclude`, `|`, and `r/regex/`. SQL wildcards follow Atuin's behavior.
+Invalid regexes return no results. The multi-line filter works in both views.
+
+Compatibility is pinned to the version and default settings above; custom CLI
+settings and daemon search modes are outside this compatibility target.
+The adapted Atuin code is covered by [its MIT license](licenses/Atuin-MIT.txt).
+
+Run `cargo test --locked` for regression tests. To compare a running service
+against the installed Atuin 18.16.1 CLI, including result IDs, ordering and
+pagination without printing history contents:
+
+```sh
+python3 scripts/check-cli-search.py
+```
+
 ## Run as a systemd user service
 
 Recommended way to keep it always available. Runs as your user, so it has

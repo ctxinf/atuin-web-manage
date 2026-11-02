@@ -19,14 +19,19 @@
     padding: 8px 0; margin-bottom: 4px;
     border-bottom: 1px solid #8884;
   }
-  .bar input[type=search] { flex: 1; min-width: 160px; max-width: 320px; padding: 6px 8px; }
+  .search-box { flex: 1; min-width: 160px; max-width: 320px; }
+  .bar input[type=search] { width: 100%; padding: 6px 8px; }
+  .sort-tabs { display: flex; gap: 5px; align-items: center; margin-top: 3px; font-size: 11px; color: #888; }
+  .sort-tabs button { border: 0; background: none; color: inherit; padding: 1px 3px; font: inherit; border-radius: 2px; }
+  .sort-tabs button[aria-selected=true] { color: CanvasText; background: color-mix(in srgb, CanvasText 9%, Canvas); font-weight: 600; }
+  .sort-tabs button:focus-visible { outline: 2px solid Highlight; }
   button { padding: 6px 10px; cursor: pointer; }
   button.danger { background: #c33; color: #fff; border: 1px solid #a22; }
   button.danger:disabled { background: #ccc; color: #666; border-color: #bbb; cursor: not-allowed; }
   .meta { color: #888; font-size: 12px; }
   table { width: 100%; border-collapse: collapse; table-layout: fixed; }
   th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid #8884; vertical-align: top; }
-  th { position: sticky; top: 49px; background: Canvas; z-index: 2; }
+  th { position: sticky; top: var(--bar-height, 72px); background: Canvas; z-index: 2; }
   tbody tr:has(.cb:checked) { background: color-mix(in srgb, #c33 18%, transparent); }
   td.cmd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-all; }
   td.cmd input, td.cmd textarea { width: 100%; font: inherit; padding: 2px 4px; }
@@ -71,7 +76,15 @@
   <span id="stats" class="meta"></span>
 </div>
 <div class="bar">
-  <input id="q" type="search" placeholder="search command…" autofocus>
+  <div class="search-box">
+    <input id="q" type="search" placeholder="fuzzy search: git log…" aria-label="Search commands" title="Atuin fuzzy syntax: &apos;exact, ^prefix, suffix$, !exclude, |, r/regex/; uppercase terms are case-sensitive." autofocus>
+    <div class="sort-tabs" role="tablist" aria-label="Search sort order">
+      <span aria-hidden="true">sort by:</span>
+      <button id="sort-time" role="tab" aria-selected="false" aria-controls="history-results" tabindex="-1" data-sort="time">time</button>
+      <span aria-hidden="true">|</span>
+      <button id="sort-relevance" role="tab" aria-selected="true" aria-controls="history-results" data-sort="relevance" title="Atuin 18.16.1 default GLOBAL fuzzy: rank the newest 200 unique matching user commands">relevance</button>
+    </div>
+  </div>
   <label class="meta" title="only show commands containing a newline">
     <input type="checkbox" id="multiline"> multi-line only
   </label>
@@ -84,7 +97,7 @@
   </details>
 </div>
 
-<table>
+<table id="history-results" aria-label="History search results">
   <thead>
     <tr>
       <th class="col-cb"><input type="checkbox" id="cbAll"></th>
@@ -118,7 +131,7 @@
 
 <script>
 const $ = (s) => document.querySelector(s);
-const state = { q: "", limit: 50, offset: 0, total: 0, rows: [], multiline: false };
+const state = { q: "", limit: 50, offset: 0, total: 0, rows: [], multiline: false, sort: "relevance" };
 
 function fmtTs(ns) {
   const d = new Date(Math.floor(ns / 1e6));
@@ -136,15 +149,20 @@ function toast(msg) {
   toast._t = setTimeout(() => t.classList.remove("show"), 1600);
 }
 
+let loadVersion = 0;
 async function load() {
+  const version = ++loadVersion;
   const url = new URL("/api/history", location.origin);
   url.searchParams.set("q", state.q);
+  url.searchParams.set("sort", state.sort);
   url.searchParams.set("limit", state.limit);
   url.searchParams.set("offset", state.offset);
   if (state.multiline) url.searchParams.set("multiline", "true");
   const r = await fetch(url);
+  if (version !== loadVersion) return;
   if (!r.ok) { toast("load failed: " + r.status); return; }
   const data = await r.json();
+  if (version !== loadVersion) return;
   state.total = data.total;
   state.rows = data.rows;
   render();
@@ -184,7 +202,8 @@ function render() {
   const start = state.total === 0 ? 0 : state.offset + 1;
   const end = Math.min(state.offset + state.limit, state.total);
   $("#pageInfo").textContent = `${start}–${end} of ${state.total}`;
-  $("#meta").textContent = state.q ? `filter: "${state.q}"` : `all rows`;
+  const scope = state.sort === "relevance" ? "CLI · up to 200 unique commands" : "all rows";
+  $("#meta").textContent = state.q ? `${scope} · "${state.q}"` : scope;
   $("#prev").disabled = state.offset <= 0;
   $("#next").disabled = end >= state.total;
 }
@@ -276,6 +295,34 @@ $("#delSel").addEventListener("click", async () => {
     state.offset = Math.max(0, state.offset - state.limit);
   }
   load();
+});
+
+new ResizeObserver(([entry]) => {
+  document.documentElement.style.setProperty("--bar-height", `${entry.target.offsetHeight}px`);
+}).observe($(".bar"));
+
+const sortTabs = [...document.querySelectorAll("[data-sort]")];
+function setSort(tab) {
+  clearTimeout(qTimer);
+  state.q = $("#q").value;
+  state.sort = tab.dataset.sort;
+  state.offset = 0;
+  sortTabs.forEach((button) => {
+    const selected = button === tab;
+    button.setAttribute("aria-selected", String(selected));
+    button.tabIndex = selected ? 0 : -1;
+  });
+  load();
+}
+sortTabs.forEach((tab, index) => {
+  tab.addEventListener("click", () => setSort(tab));
+  tab.addEventListener("keydown", (event) => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const next = event.key === "Home" ? 0 : event.key === "End" ? 1 : 1 - index;
+    sortTabs[next].focus();
+    setSort(sortTabs[next]);
+  });
 });
 
 let qTimer;

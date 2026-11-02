@@ -1,6 +1,6 @@
 [package]
 name = "atuin-web-manage"
-version = "1.0.4"
+version = "1.1.0"
 edition = "2021"
 description = "Local web UI to manage (search, edit, bulk-delete) atuin shell history"
 license = "MIT OR Apache-2.0"
@@ -27,9 +27,12 @@ pr-run-mode = "plan"
 [dependencies]
 axum = "0.7"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.31", features = ["bundled", "functions"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+minspan = "=0.1.5"
+sql-builder = "=3.1.1"
+regex = "=1.12.3"
 clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"

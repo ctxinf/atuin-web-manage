@@ -13,6 +13,9 @@ use clap::Parser;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
+mod atuin_query;
+mod search;
+
 static INDEX_HTML: &str = include_str!("../static/index.html");
 
 #[derive(Parser, Debug)]
@@ -43,6 +46,14 @@ struct HistoryRow {
     hostname: String,
 }
 
+#[derive(Debug, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum SortOrder {
+    Time,
+    #[default]
+    Relevance,
+}
+
 #[derive(Debug, Deserialize)]
 struct ListQuery {
     #[serde(default)]
@@ -53,6 +64,8 @@ struct ListQuery {
     offset: i64,
     #[serde(default)]
     multiline: bool,
+    #[serde(default)]
+    sort: SortOrder,
 }
 fn default_limit() -> i64 {
     50
@@ -97,6 +110,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let conn = Connection::open(&db_path)?;
+    search::register(&conn)?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
 
@@ -149,47 +163,52 @@ async fn list_history(
 ) -> Result<Json<ListResp>, (StatusCode, String)> {
     let limit = q.limit.clamp(1, 500);
     let offset = q.offset.max(0);
-    let needle = q.q.trim().to_string();
-
-    let mut where_clauses: Vec<&str> = vec!["deleted_at IS NULL"];
-    let mut bind: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-    let like = format!("%{}%", needle);
-    if !needle.is_empty() {
-        where_clauses.push("command LIKE ?");
-        bind.push(Box::new(like));
+    if !search::valid_regexes(&q.q) {
+        return Ok(Json(ListResp {
+            total: 0,
+            rows: Vec::new(),
+        }));
     }
-    if q.multiline {
-        where_clauses.push("instr(command, char(10)) > 0");
-    }
-    let where_sql = where_clauses.join(" AND ");
-
     let conn = state.conn.lock().unwrap();
-
-    let count_sql = format!("SELECT COUNT(*) FROM history WHERE {}", where_sql);
-    let list_sql = format!(
-        "SELECT id, timestamp, duration, exit, command, cwd, hostname
-         FROM history WHERE {} ORDER BY timestamp DESC LIMIT ? OFFSET ?",
-        where_sql
-    );
-
-    let count_params: Vec<&dyn rusqlite::ToSql> = bind.iter().map(|b| b.as_ref()).collect();
-    let total: i64 = conn
-        .query_row(&count_sql, count_params.as_slice(), |r| r.get(0))
-        .map_err(map_err)?;
-
-    let limit_box: Box<dyn rusqlite::ToSql> = Box::new(limit);
-    let offset_box: Box<dyn rusqlite::ToSql> = Box::new(offset);
-    let mut list_bind = bind;
-    list_bind.push(limit_box);
-    list_bind.push(offset_box);
-    let list_params: Vec<&dyn rusqlite::ToSql> = list_bind.iter().map(|b| b.as_ref()).collect();
-
-    let mut stmt = conn.prepare(&list_sql).map_err(map_err)?;
-    let rows = stmt
-        .query_map(list_params.as_slice(), row_to_history)
-        .map_err(map_err)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(map_err)?;
+    let has_author = conn.prepare("SELECT author FROM history LIMIT 0").is_ok();
+    let relevance = q.sort == SortOrder::Relevance;
+    let sql = search::query(&q.q, relevance, q.multiline, has_author);
+    let inner = sql.trim().trim_end_matches(';');
+    let (total, rows) = if relevance {
+        // Match CLI: newest 200 distinct results first, rank that entire set,
+        // then apply web pagination. Ranking a page would change the results.
+        let mut stmt = conn.prepare(inner).map_err(map_err)?;
+        let mut rows = stmt
+            .query_map([], row_to_history)
+            .map_err(map_err)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(map_err)?;
+        if !q.q.is_empty() {
+            search::reorder(&q.q, &mut rows);
+        }
+        let total = rows.len() as i64;
+        let page = rows
+            .into_iter()
+            .skip(offset as usize)
+            .take(limit as usize)
+            .collect();
+        (total, page)
+    } else {
+        let total = conn
+            .query_row(&format!("SELECT count(*) FROM ({inner})"), [], |r| r.get(0))
+            .map_err(map_err)?;
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT * FROM ({inner}) ORDER BY timestamp DESC, id DESC LIMIT ? OFFSET ?"
+            ))
+            .map_err(map_err)?;
+        let rows = stmt
+            .query_map(params![limit, offset], row_to_history)
+            .map_err(map_err)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(map_err)?;
+        (total, rows)
+    };
 
     Ok(Json(ListResp { total, rows }))
 }
@@ -236,9 +255,7 @@ struct StatsResp {
     newest_ts: Option<i64>,
 }
 
-async fn stats(
-    State(state): State<AppState>,
-) -> Result<Json<StatsResp>, (StatusCode, String)> {
+async fn stats(State(state): State<AppState>) -> Result<Json<StatsResp>, (StatusCode, String)> {
     let conn = state.conn.lock().unwrap();
     let total: i64 = conn
         .query_row(
@@ -312,9 +329,7 @@ async fn dedupe_preview(
     }))
 }
 
-async fn dedupe(
-    State(state): State<AppState>,
-) -> Result<Json<AffectedResp>, (StatusCode, String)> {
+async fn dedupe(State(state): State<AppState>) -> Result<Json<AffectedResp>, (StatusCode, String)> {
     let conn = state.conn.lock().unwrap();
     let sql = format!("DELETE FROM history WHERE {}", DEDUPE_WHERE);
     let affected = conn.execute(&sql, []).map_err(map_err)?;
@@ -334,4 +349,60 @@ async fn edit_history(
         )
         .map_err(map_err)?;
     Ok(Json(AffectedResp { affected }))
+}
+
+#[cfg(test)]
+mod search_api_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn search_pagination_counts_duplicates_and_multiline() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE history (
+                id TEXT, timestamp INTEGER, duration INTEGER DEFAULT 0,
+                exit INTEGER DEFAULT 0, command TEXT, cwd TEXT DEFAULT '',
+                hostname TEXT DEFAULT '', deleted_at INTEGER
+            );",
+        )
+        .unwrap();
+        for (id, timestamp, command, deleted) in [
+            ("one", 1, "A yy B yxxx C lyy", None),
+            ("two", 2, "A yy B yxxx C lyy", None),
+            ("three", 3, "A\nB\nC", None),
+            ("four", 4, "A B C", Some(4)),
+            ("five", 5, "A B", None),
+        ] {
+            conn.execute(
+                "INSERT INTO history (id, timestamp, command, deleted_at) VALUES (?, ?, ?, ?)",
+                params![id, timestamp, command, deleted],
+            )
+            .unwrap();
+        }
+        let state = AppState {
+            conn: Arc::new(Mutex::new(conn)),
+        };
+        for (offset, multiline, total, expected) in [
+            (0, false, 3, "three"),
+            (1, false, 3, "two"),
+            (2, false, 3, "one"),
+            (0, true, 1, "three"),
+        ] {
+            let Json(result) = list_history(
+                State(state.clone()),
+                Query(ListQuery {
+                    q: "A B C".into(),
+                    limit: 1,
+                    offset,
+                    multiline,
+                    sort: SortOrder::Time,
+                }),
+            )
+            .await
+            .unwrap();
+            assert_eq!(result.total, total);
+            assert_eq!(result.rows.len(), 1);
+            assert_eq!(result.rows[0].id, expected);
+        }
+    }
 }
